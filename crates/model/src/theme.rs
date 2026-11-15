@@ -27,7 +27,13 @@ pub struct ScriptFont {
 impl FontSet {
     /// The typeface the theme gives `script` (`"Arab"`), if any.
     pub fn script(&self, script: &str) -> Option<&str> {
-        self.scripts.iter().find(|f| f.script.eq_ignore_ascii_case(script) && !f.typeface.is_empty()).map(|f| f.typeface.as_str())
+        if let Some(f) = self.scripts.iter().find(|f| f.script.eq_ignore_ascii_case(script) && !f.typeface.is_empty()).map(|f| f.typeface.as_str()) {
+            return Some(f);
+        }
+        if script.eq_ignore_ascii_case("Taml") {
+            return Some("Baloo Thambi");
+        }
+        None
     }
 }
 
@@ -177,13 +183,14 @@ pub fn theme_variants(t: &Theme) -> Vec<ColorScheme> {
 
 /// Our original built-in themes (shown in Design ▸ Themes). Colours and names are our own.
 pub fn builtin_themes() -> Vec<Theme> {
+    let tamil_script = || vec![ScriptFont { script: "Taml".into(), typeface: "Baloo Thambi".into() }];
     let t = |name: &str, colors: ColorScheme, major: &str, minor: &str| Theme {
         name: name.into(),
         colors,
         fonts: FontScheme {
             name: name.into(),
-            major: FontSet { latin: major.into(), ..Default::default() },
-            minor: FontSet { latin: minor.into(), ..Default::default() },
+            major: FontSet { latin: major.into(), scripts: tamil_script(), ..Default::default() },
+            minor: FontSet { latin: minor.into(), scripts: tamil_script(), ..Default::default() },
         },
         format: default_format(),
         raw_extra: None,
@@ -277,13 +284,15 @@ pub fn builtin_color_schemes() -> Vec<ColorScheme> {
 
 /// Named font pairs for Design ▸ Variants ▸ Fonts.
 pub fn builtin_font_schemes() -> Vec<FontScheme> {
+    let tamil_script = || vec![ScriptFont { script: "Taml".into(), typeface: "Baloo Thambi".into() }];
     let f = |name: &str, major: &str, minor: &str| FontScheme {
         name: name.into(),
-        major: FontSet { latin: major.into(), ..Default::default() },
-        minor: FontSet { latin: minor.into(), ..Default::default() },
+        major: FontSet { latin: major.into(), scripts: tamil_script(), ..Default::default() },
+        minor: FontSet { latin: minor.into(), scripts: tamil_script(), ..Default::default() },
     };
     vec![
         f("Inter", "Inter", "Inter"),
+        f("Tamil (Baloo Thambi)", "Baloo Thambi", "Baloo Thambi"),
         f("Classic", "Merriweather", "Open Sans"),
         f("Geometric", "Montserrat", "Lato"),
         f("Editorial", "Playfair Display", "Lato"),

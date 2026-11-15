@@ -111,6 +111,7 @@ fn os_families(script: ScriptTag) -> &'static [&'static str] {
         b"Hebr" => &["Noto Sans Hebrew", "Arial Hebrew", "SF Hebrew", "DejaVu Sans"],
         b"Thai" => &["Noto Sans Thai", "Thonburi"],
         b"Deva" => &["Noto Sans Devanagari", "Kohinoor Devanagari", "Devanagari Sangam MN"],
+        b"Taml" => &["Baloo Thambi", "Baloo Thambi 2", "Noto Sans Tamil", "Latha", "Vijaya"],
         _ => &[],
     }
 }
@@ -333,5 +334,16 @@ mod tests {
             assert!(!f.family.is_empty());
         }
         assert_eq!(loaded(&db), before, "no installed family was loaded");
+    }
+
+    #[test]
+    fn tamil_cluster_falls_back_to_baloo_thambi() {
+        let db = FontDb::global();
+        let inter = db.face(crate::DEFAULT_FAMILY, "Regular");
+        let cluster = ['\u{0B95}']; // Tamil letter Ka: க
+        let f = db.cascade(&cluster, std::slice::from_ref(&inter), "Regular");
+        if covers_cluster(&f, &cluster) {
+            assert!(f.family.contains("Baloo Thambi") || f.covers('\u{0B95}'));
+        }
     }
 }

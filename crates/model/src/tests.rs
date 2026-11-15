@@ -339,3 +339,18 @@ fn colour_alpha_follows_alpha_mod_and_off() {
     let both = base().with(ColorTransform::Alpha(40000)).with(ColorTransform::AlphaMod(50000));
     assert!((both.alpha() - 0.2).abs() < 1e-9, "{}", both.alpha());
 }
+
+#[test]
+fn default_tamil_font_is_baloo_thambi() {
+    let p = Presentation::default();
+    let master = &p.masters[0];
+    assert_eq!(master.theme.fonts.major.script("Taml"), Some("Baloo Thambi"));
+    assert_eq!(master.theme.fonts.minor.script("Taml"), Some("Baloo Thambi"));
+    let empty_set = theme::FontSet::default();
+    assert_eq!(empty_set.script("Taml"), Some("Baloo Thambi"));
+
+    let schemes = theme::builtin_font_schemes();
+    let tamil_scheme = schemes.iter().find(|f| f.name.contains("Tamil"));
+    assert!(tamil_scheme.is_some());
+    assert_eq!(tamil_scheme.unwrap().major.script("Taml"), Some("Baloo Thambi"));
+}
