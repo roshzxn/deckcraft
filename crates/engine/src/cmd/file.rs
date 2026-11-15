@@ -156,9 +156,146 @@ pub fn open_checked(name: &str, bytes: &[u8]) -> Result<(Presentation, Damage)> 
     open_other(name, bytes).map(|(p, slides)| (p, Damage { media: vec![], slides }))
 }
 
+const PPT_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Does `bytes` start with the Compound File Binary Format magic bytes used by legacy `.ppt`?
+pub fn sniff_ppt(bytes: &[u8]) -> bool {
+    bytes.starts_with(&PPT_MAGIC)
+}
+
+fn is_ppt(name: &str, bytes: &[u8]) -> bool {
+    name.to_ascii_lowercase().ends_with(".ppt") || sniff_ppt(bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static PPT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+enum PptConverter {
+    X2t { binary: std::path::PathBuf, lib_dir: Option<std::path::PathBuf> },
+    Soffice { binary: std::path::PathBuf },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn find_ppt_converter() -> Option<PptConverter> {
+    if let Some(custom) = std::env::var_os("DECKCRAFT_PPT_CONVERTER").or_else(|| std::env::var_os("DECKCRAFT_X2T_PATH")) {
+        let p = std::path::PathBuf::from(custom);
+        if p.is_file() {
+            let lib_dir = p.parent().map(std::path::PathBuf::from);
+            return Some(PptConverter::X2t { binary: p, lib_dir });
+        }
+    }
+
+    let x2t_candidates = [
+        "/snap/onlyoffice-desktopeditors/current/opt/onlyoffice/desktopeditors/converter/x2t",
+        "/snap/onlyoffice-desktopeditors/1706/opt/onlyoffice/desktopeditors/converter/x2t",
+        "/opt/onlyoffice/desktopeditors/converter/x2t",
+        "/usr/bin/x2t",
+        "/usr/local/bin/x2t",
+    ];
+
+    for c in &x2t_candidates {
+        let p = std::path::Path::new(c);
+        if p.is_file() {
+            let lib_dir = p.parent().map(std::path::PathBuf::from);
+            return Some(PptConverter::X2t { binary: p.to_path_buf(), lib_dir });
+        }
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let p = dir.join("x2t");
+            if p.is_file() {
+                let lib_dir = p.parent().map(std::path::PathBuf::from);
+                return Some(PptConverter::X2t { binary: p, lib_dir });
+            }
+        }
+        for name in &["soffice", "libreoffice"] {
+            for dir in std::env::split_paths(&path_var) {
+                let p = dir.join(name);
+                if p.is_file() {
+                    return Some(PptConverter::Soffice { binary: p });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn convert_ppt_to_pptx(bytes: &[u8]) -> Result<Vec<u8>> {
+    let converter = find_ppt_converter().ok_or_else(|| {
+        EngineError::Other(
+            "Opening legacy PowerPoint (.ppt) files requires a converter such as ONLYOFFICE (x2t) or LibreOffice installed on the system.".into(),
+        )
+    })?;
+
+    let count = PPT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir();
+    let in_path = temp_dir.join(format!("deckcraft_ppt_{}_{}.ppt", std::process::id(), count));
+    let out_path = temp_dir.join(format!("deckcraft_ppt_{}_{}.pptx", std::process::id(), count));
+
+    std::fs::write(&in_path, bytes).map_err(|e| EngineError::Other(format!("Failed to write temporary PPT file: {e}")))?;
+
+    struct TempCleanup(std::path::PathBuf, std::path::PathBuf);
+    impl Drop for TempCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(&self.1);
+        }
+    }
+    let _cleanup = TempCleanup(in_path.clone(), out_path.clone());
+
+    let output = match converter {
+        PptConverter::X2t { binary, lib_dir } => {
+            let mut cmd = std::process::Command::new(binary);
+            if let Some(ld) = lib_dir {
+                let mut ld_paths = vec![ld];
+                if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+                    ld_paths.extend(std::env::split_paths(&existing));
+                }
+                if let Ok(new_ld) = std::env::join_paths(ld_paths) {
+                    cmd.env("LD_LIBRARY_PATH", new_ld);
+                }
+            }
+            cmd.arg(&in_path).arg(&out_path);
+            cmd.output().map_err(|e| EngineError::Other(format!("Failed to execute x2t PPT converter: {e}")))?
+        }
+        PptConverter::Soffice { binary } => {
+            let mut cmd = std::process::Command::new(binary);
+            cmd.arg("--headless").arg("--convert-to").arg("pptx").arg(&in_path).arg("--outdir").arg(&temp_dir);
+            cmd.output().map_err(|e| EngineError::Other(format!("Failed to execute LibreOffice PPT converter: {e}")))?
+        }
+    };
+
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(EngineError::Other(format!("PPT conversion failed (status {}): {err_msg}", output.status)));
+    }
+
+    if !out_path.is_file() {
+        return Err(EngineError::Other("PPT converter did not produce an output PPTX file".into()));
+    }
+
+    std::fs::read(&out_path).map_err(|e| EngineError::Other(format!("Failed to read converted PPTX file: {e}")))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn convert_ppt_to_pptx(_bytes: &[u8]) -> Result<Vec<u8>> {
+    Err(EngineError::Other("Opening legacy .ppt files is not supported on web".into()))
+}
+
 fn open_other(name: &str, bytes: &[u8]) -> Result<(Presentation, Vec<String>)> {
     if deckcraft_pptx::sniff(bytes) {
         let (mut p, lost_slides) = deckcraft_pptx::import_checked(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+        deckcraft_format::repair(&mut p);
+        probe_clips(&mut p);
+        return Ok((p, lost_slides));
+    }
+    if is_ppt(name, bytes) {
+        let pptx_bytes = convert_ppt_to_pptx(bytes)?;
+        let (mut p, lost_slides) = deckcraft_pptx::import_checked(&pptx_bytes).map_err(|e| EngineError::Other(e.to_string()))?;
         deckcraft_format::repair(&mut p);
         probe_clips(&mut p);
         return Ok((p, lost_slides));
@@ -460,6 +597,8 @@ pub fn format_for_path(path: &str) -> &'static str {
         "potx"
     } else if l.ends_with(".ppsx") {
         "ppsx"
+    } else if l.ends_with(".ppt") {
+        "ppt"
     } else if l.ends_with(".png") {
         "png"
     } else if l.ends_with(".jpg") || l.ends_with(".jpeg") {

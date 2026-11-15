@@ -7484,3 +7484,17 @@ fn shape_adjust_and_quick_style_reject_invalid_index() {
     assert_eq!(s.doc().unwrap().shape(id).unwrap().style, before.style);
     s.execute("shape.adjust", &json!({"value": 0.4})).unwrap();
 }
+
+#[test]
+fn ppt_file_format_and_open_test() {
+    assert_eq!(cmd::file::format_for_path("song.ppt"), "ppt");
+    assert_eq!(cmd::file::format_for_path("SONG.PPT"), "ppt");
+    let ppt_sample = "/home/bca/Downloads/obs_downgrade/En Kombai Uyarthinire_Lyrics_www.christanthem.com.ppt";
+    if std::path::Path::new(ppt_sample).is_file() {
+        let mut s = session();
+        let res = s.execute("file.open", &json!({"path": ppt_sample}));
+        assert!(res.is_ok(), "failed to open ppt: {:?}", res.err());
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.slides.len(), 5);
+    }
+}
